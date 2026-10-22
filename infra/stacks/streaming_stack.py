@@ -17,6 +17,7 @@ from aws_cdk import (
     aws_apigatewayv2_authorizers as authorizers,
     aws_apigatewayv2_integrations as integrations,
     aws_dynamodb as dynamodb,
+    aws_iam as iam,
     aws_lambda as lambda_,
     aws_lambda_event_sources as sources,
     aws_logs as logs,
@@ -32,7 +33,16 @@ LAMBDA_CODE_EXCLUDES = ["glue_jobs", "**/__pycache__", "**/*.pyc"]
 
 
 class StreamingStack(Stack):
-    def __init__(self, scope: Construct, construct_id: str, *, config: ProjectConfig, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        *,
+        config: ProjectConfig,
+        model_endpoint_name: str | None = None,
+        alert_threshold: float = 0.6,
+        **kwargs,
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
         name = config.project_name
 
@@ -125,7 +135,8 @@ class StreamingStack(Stack):
                 "PROFILES_TABLE": self.profiles_table.table_name,
                 "ALERTS_TABLE": self.alerts_table.table_name,
                 "ALERT_TOPIC_ARN": self.alert_topic.topic_arn,
-                "ALERT_THRESHOLD": "0.6",
+                "ALERT_THRESHOLD": str(alert_threshold),
+                "MODEL_ENDPOINT": model_endpoint_name or "",
                 "EMAIL_MIN_SCORE": "0.9",
                 "MAX_EMAILS_PER_HOUR": "10",
             },
@@ -133,6 +144,13 @@ class StreamingStack(Stack):
         self.profiles_table.grant_read_write_data(self.scorer_fn)
         self.alerts_table.grant_read_write_data(self.scorer_fn)
         self.alert_topic.grant_publish(self.scorer_fn)
+        if model_endpoint_name:
+            self.scorer_fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["sagemaker:InvokeEndpoint"],
+                    resources=[f"arn:aws:sagemaker:{self.region}:{self.account}:endpoint/{model_endpoint_name}"],
+                )
+            )
 
         self.scorer_fn.add_event_source(
             sources.SqsEventSource(

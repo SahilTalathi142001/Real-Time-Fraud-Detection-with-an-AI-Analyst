@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from scorer.scoring import ScoredTxn, score_transactions
@@ -25,6 +26,7 @@ PROFILES_TABLE = os.environ.get("PROFILES_TABLE", "")
 ALERTS_TABLE = os.environ.get("ALERTS_TABLE", "")
 ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
 ALERT_THRESHOLD = float(os.environ.get("ALERT_THRESHOLD", "0.6"))
+MODEL_ENDPOINT = os.environ.get("MODEL_ENDPOINT", "")
 EMAIL_MIN_SCORE = float(os.environ.get("EMAIL_MIN_SCORE", "0.9"))
 MAX_EMAILS_PER_HOUR = int(os.environ.get("MAX_EMAILS_PER_HOUR", "10"))
 PROFILE_TTL_DAYS = 30
@@ -33,6 +35,10 @@ THROTTLE_KEY_PREFIX = "__email_throttle__#"
 
 dynamodb = boto3.resource("dynamodb")
 sns = boto3.client("sns")
+# Serverless endpoints can take ~10-20s on a cold start; past that we fall back to rules.
+sagemaker_runtime = boto3.client(
+    "sagemaker-runtime", config=Config(read_timeout=25, connect_timeout=5, retries={"max_attempts": 2})
+)
 
 
 def _decode(records: list[dict]) -> list[dict]:
@@ -168,8 +174,17 @@ def _emit_metrics(results: list[ScoredTxn], emails: int, duration_ms: float) -> 
     )
 
 
+def invoke_model(rows) -> list[float]:
+    body = "\n".join(",".join(f"{v:.5f}" for v in row) for row in rows)
+    resp = sagemaker_runtime.invoke_endpoint(EndpointName=MODEL_ENDPOINT, ContentType="text/csv", Body=body)
+    scores = [float(x) for x in resp["Body"].read().decode().replace("\n", ",").split(",") if x.strip()]
+    if len(scores) != len(rows):
+        raise ValueError(f"endpoint returned {len(scores)} scores for {len(rows)} rows")
+    return scores
+
+
 def get_model_fn():
-    return None
+    return invoke_model if MODEL_ENDPOINT else None
 
 
 def handler(event, context):
