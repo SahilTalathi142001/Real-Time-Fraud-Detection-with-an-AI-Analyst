@@ -1,0 +1,38 @@
+%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 45}, "themeVariables": {"fontSize": "20px"}}}%%
+flowchart LR
+    Gen["Payment generator<br/>python -m generator live"]
+
+    subgraph RT["1 · Real-time path: payment to alert in about 1-2 s"]
+        direction TB
+        API["API Gateway HTTP API<br/>POST /payments · IAM auth · throttled"] --> Ingest["Lambda: ingest<br/>validate · batch"] --> FIFO[["SQS FIFO<br/>group = payer_id"]] --> Scorer["Lambda: scorer<br/>features · rule reasons"]
+        Scorer <--> Profiles[("DynamoDB<br/>payer profiles")]
+        Scorer --> Alerts[("DynamoDB alerts<br/>by_day · by_payer")]
+        Scorer --> SNS["SNS email<br/>score ≥ 0.9"]
+    end
+
+    subgraph ML["2 · Machine learning"]
+        direction TB
+        Train["SageMaker Processing job<br/>XGBoost training"] -.->|model.tar.gz| Endpoint["SageMaker serverless endpoint<br/>fraud-analyst-xgb"]
+    end
+
+    subgraph Lake["3 · Lakehouse: Apache Iceberg on S3"]
+        direction TB
+        Buffer[["SQS lake buffer"]] --> Loader["Lambda: lake loader<br/>every 5 min"] -->|Athena INSERT| Bronze[("bronze tables")] --> Glue["Glue 5.0 Spark job"] --> SilverGold[("silver + gold tables<br/>views")]
+        Athena["Athena workgroup<br/>1 GB scan cap"]
+    end
+
+    subgraph AI["4 · AI analyst"]
+        direction TB
+        UI["Streamlit console<br/>chat · live alerts · SQL"] -->|InvokeAgentRuntime| Runtime["Bedrock AgentCore Runtime<br/>Strands agent"]
+        Runtime <--> Claude["Claude Haiku 4.5<br/>Amazon Bedrock"]
+        Runtime -->|playbook search| KB["Bedrock Knowledge Base<br/>Titan embeddings v2"] --> Vectors[("S3 Vectors<br/>fraud playbook")]
+    end
+
+    Ops["5 · CloudWatch dashboard + alarms · AWS Budgets $40 / $80 / $110"]
+
+    Gen -->|SigV4| API
+    Scorer -->|InvokeEndpoint| Endpoint
+    Scorer --> Buffer
+    SilverGold --- Athena
+    Runtime -->|SQL tool| Athena
+    Runtime -->|alert tools| Alerts

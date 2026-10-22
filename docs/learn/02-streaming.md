@@ -151,9 +151,12 @@ them on a dashboard.
 | SQS FIFO | $0.50 / million requests (first 1M/month free) | Lambda's idle long-polling is ~0.5–1M requests/month; demo traffic is tiny |
 | DynamoDB on-demand | ~$1.42 / million writes, $0.28 / million reads | < $0.05 per demo |
 | SNS email | first 1,000 emails/month free | ≤ 10/hour by design |
-| CloudWatch custom metrics | $0.30 / metric / month, prorated hourly | 6 metrics ≈ $1.80/month if left up |
+| CloudWatch custom metrics | $0.30 / metric / month, prorated hourly | billed only for hours with traffic; the first 10 metrics are free |
 
-**Idle cost: about $0.06/day** (mostly the custom metrics; there's nothing like a Kinesis shard billing by the hour).
+**Idle cost: about $0.01/day or less.** A custom metric costs nothing in an hour when no data is
+published, so an idle pipeline doesn't pay for its metrics. And there's nothing like a Kinesis
+shard billing by the hour. (An earlier version of this guide said about $0.06/day; that assumed
+the metrics bill all month.)
 
 ## Try it yourself
 
