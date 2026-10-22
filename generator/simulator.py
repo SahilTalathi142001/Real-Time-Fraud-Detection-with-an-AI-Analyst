@@ -174,7 +174,7 @@ class PaymentSimulator:
             "payee_type": payee_type,
             "merchant_id": merchant_id,
             "merchant_category": category,
-            "amount": round(max(amount, 1.0), 2),
+            "amount": round(float(max(amount, 1.0)), 2),
             "currency": "INR",
             "channel": channel,
             "device_id": device[0],
@@ -241,7 +241,7 @@ class PaymentSimulator:
             self._schedule(
                 self._event(user, ts_ms, user.typical_amount, "grocery", self.rng.choice(user.devices), user.home_city, "UPI_QR")
             )
-            jump_ts = ts_ms + self.rng.randint(2, 30) * 60_000
+            jump_ts = ts_ms + self.rng.randint(1, 8) * 60_000
             self._schedule(
                 self._event(
                     user, jump_ts, user.typical_amount * self.rng.uniform(3, 10),

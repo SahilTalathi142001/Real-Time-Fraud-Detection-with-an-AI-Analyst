@@ -3,3 +3,5 @@ pytest>=8.0
 moto[dynamodb,sns,sqs]>=5.0
 xgboost-cpu>=2.0
 numpy>=1.26
+# Optional: lets tests/test_glue_job.py run the Glue transformations on local Spark (needs Java 17+)
+pyspark==3.5.4

@@ -117,3 +117,24 @@ def test_scorer_rejects_mismatched_endpoint_output(monkeypatch):
     monkeypatch.setattr(scorer, "sagemaker_runtime", _FakeRuntime("0.5"))
     with pytest.raises(ValueError):
         scorer.invoke_model([[1.0], [2.0]])
+
+
+def test_scorer_retries_serverless_model_error(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("MODEL_ENDPOINT", "fraud-analyst-xgb")
+    scorer = importlib.reload(importlib.import_module("scorer.handler"))
+    monkeypatch.setattr(scorer.time, "sleep", lambda s: None)
+
+    class Flaky(_FakeRuntime):
+        def invoke_endpoint(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) < 3:
+                raise ClientError({"Error": {"Code": "ModelError", "Message": "could not get a response"}}, "InvokeEndpoint")
+            return {"Body": io.BytesIO(self.payload.encode())}
+
+    fake = Flaky("0.2,0.8")
+    monkeypatch.setattr(scorer, "sagemaker_runtime", fake)
+    assert scorer.invoke_model([[1.0], [2.0]]) == [0.2, 0.8]
+    assert len(fake.calls) == 3

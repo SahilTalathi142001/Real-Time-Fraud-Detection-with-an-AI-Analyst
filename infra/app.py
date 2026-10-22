@@ -9,6 +9,7 @@ import aws_cdk as cdk
 
 from infra.config import ProjectConfig
 from infra.stacks.foundation_stack import FoundationStack
+from infra.stacks.lakehouse_stack import LakehouseStack
 from infra.stacks.ml_stack import MlStack
 from infra.stacks.streaming_stack import StreamingStack
 
@@ -47,12 +48,22 @@ def build_app(context: dict | None = None) -> cdk.App:
         model_image=model.get("image"),
         env=env,
     )
+    lakehouse = LakehouseStack(
+        app,
+        "FraudLakehouse",
+        config=config,
+        lake_bucket=foundation.lake_bucket,
+        athena_results_bucket=foundation.athena_results_bucket,
+        database_name=foundation.glue_database_name,
+        env=env,
+    )
     StreamingStack(
         app,
         "FraudStreaming",
         config=config,
         model_endpoint_name=ml.endpoint_name if ml.has_endpoint else None,
         alert_threshold=float(model.get("threshold", 0.6)) if ml.has_endpoint else 0.6,
+        lake_queue=lakehouse.lake_buffer,
         env=env,
     )
 
