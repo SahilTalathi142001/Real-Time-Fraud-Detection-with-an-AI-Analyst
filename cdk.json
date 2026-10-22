@@ -1,17 +1,31 @@
 {
   "app": "python3 -m infra.app",
   "watch": {
-    "include": ["infra/**", "src/**"],
-    "exclude": ["**/__pycache__", "tests/**", "cdk.out/**"]
+    "include": [
+      "infra/**",
+      "src/**"
+    ],
+    "exclude": [
+      "**/__pycache__",
+      "tests/**",
+      "cdk.out/**"
+    ]
   },
   "context": {
     "projectName": "fraud-analyst",
     "alertEmail": "sahilcsgo69@gmail.com",
     "budgetLimitUsd": 134,
-    "budgetAlertThresholdsUsd": [40, 80, 110],
+    "budgetAlertThresholdsUsd": [
+      40,
+      80,
+      110
+    ],
     "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/aws-iam:minimizePolicies": true,
-    "@aws-cdk/core:target-partitions": ["aws"]
+    "@aws-cdk/core:target-partitions": [
+      "aws"
+    ],
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
   }
 }
