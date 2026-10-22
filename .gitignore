@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# CDK
+cdk.out/
+cdk.context.json
+.cdk.staging/
+
+# Build artifacts
+build/
+dist/
+*.zip
+
+# Local data and generated outputs
+data/
+*.jsonl
+*.csv
+!docs/**/*.csv
+outputs.json
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets
+.env
+.env.*
