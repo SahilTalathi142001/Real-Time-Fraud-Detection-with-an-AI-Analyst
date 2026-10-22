@@ -138,3 +138,27 @@ def test_scorer_retries_serverless_model_error(monkeypatch):
     monkeypatch.setattr(scorer, "sagemaker_runtime", fake)
     assert scorer.invoke_model([[1.0], [2.0]]) == [0.2, 0.8]
     assert len(fake.calls) == 3
+
+
+def test_newest_model_key_picks_the_latest_job():
+    from ml.pipeline import newest_model_key
+
+    keys = [
+        "ml/output/fraud-xgb-20261022-151520/model.tar.gz",
+        "ml/output/fraud-xgb-20261021-090000/output/model.tar.gz",
+        "ml/output/fraud-xgb-20261023-080000/metrics.json",
+        "ml/data/train/train.csv",
+    ]
+    assert newest_model_key(keys) == "ml/output/fraud-xgb-20261022-151520/model.tar.gz"
+    assert newest_model_key(keys[2:]) is None
+
+
+def test_synth_warns_when_model_or_runtime_zip_is_missing(monkeypatch):
+    from aws_cdk.assertions import Annotations
+    from infra.app import build_app
+
+    context = json.loads((Path(__file__).parents[1] / "cdk.json").read_text())["context"]
+    monkeypatch.setenv("CDK_DEFAULT_ACCOUNT", "123456789012")
+    app = build_app({**context, "skipModel": True, "analystRuntimeZip": "/nonexistent.zip"})
+    Annotations.from_stack(app.node.find_child("FraudMl")).has_warning("*", Match.string_like_regexp("use-latest"))
+    Annotations.from_stack(app.node.find_child("FraudAnalyst")).has_warning("*", Match.string_like_regexp("agent package"))

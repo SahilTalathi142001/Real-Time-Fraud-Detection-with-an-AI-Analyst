@@ -221,7 +221,7 @@ section for the breakdown.
 ```bash
 source .venv/bin/activate
 python -m pytest -q tests/test_monitoring_stack.py
-python -m pytest -q                                   # everything (80 tests)
+python -m pytest -q                                   # everything (82 tests)
 
 cdk deploy FraudMonitoring
 

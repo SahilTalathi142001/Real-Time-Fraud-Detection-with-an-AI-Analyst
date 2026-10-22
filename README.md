@@ -141,18 +141,21 @@ tests/            pytest: unit tests, moto-backed handler tests, CDK assertion t
 
 ## Deploy it
 
-You need Python 3.12, Node.js 22 with the AWS CDK CLI (`npm install -g aws-cdk`), AWS
-credentials with admin access, and Bedrock model access to Claude Haiku 4.5 and Titan Text
-Embeddings v2 in your region. Each step is explained in the [phase guides](#learning-guides).
+**New to this? Follow [`docs/how-to-run.md`](docs/how-to-run.md).** It's a step-by-step guide for
+your own laptop (Windows, macOS or Linux): installing the tools, `aws configure`, deploying, running
+the generator and the console, asking the agent, checking costs, and teardown.
+
+You need Python 3.12, Node.js 22+ with the AWS CDK CLI (`npm install -g aws-cdk`), the AWS CLI v2
+with credentials for an admin IAM user, and Bedrock access to Claude Haiku 4.5 and Titan Text
+Embeddings v2 in your region. On macOS, also `brew install libomp` (for xgboost). The quickstart
+for macOS/Linux (the Windows PowerShell equivalents are in the guide):
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate   # Windows: py -3.12 -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-python -m pytest -q                                   # 80 tests, no AWS calls
+python -m pytest -q                                   # 82 tests, no AWS calls
 
-ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-REGION=$(aws configure get region)
-cdk bootstrap aws://$ACCOUNT/$REGION                  # once per account and region
+cdk bootstrap                                         # once per account and region
 
 # Phases 1-4: infrastructure, then a model
 cdk deploy FraudFoundation FraudMl FraudLakehouse FraudStreaming -c alertEmail=you@example.com
@@ -160,18 +163,24 @@ python -m ml.pipeline build-data                      # training data -> S3
 python -m ml.pipeline train                           # ~5 min; writes ml/latest_model.json
 cdk deploy FraudMl FraudStreaming                     # serverless endpoint + model scorer
 
-# Phase 5: the AI analyst
+# Phases 5-6: the AI analyst and monitoring
 python -m agent package                               # build/analyst_runtime.zip (~30 MB)
 cdk deploy FraudAnalyst FraudMonitoring
 python -m agent ingest-kb                             # index the playbook
 
-# Data for the lakehouse
+# Traffic, the console, and the lakehouse
 python -m generator --fraud-rate 0.02 live --duration 300
+streamlit run ui/app.py                               # http://localhost:8501 (in a second terminal)
 python -m lakehouse load && python -m lakehouse glue && python -m lakehouse views
 ```
 
 Then confirm the two SNS subscription emails (fraud alerts and ops alarms). Until you click the
 links, no email is delivered.
+
+**Redeploying from a fresh clone** of an account that's already deployed: run
+`python -m ml.pipeline use-latest` and `python -m agent package` before any `cdk deploy`.
+`ml/latest_model.json` and `build/analyst_runtime.zip` are git-ignored. Without them, CDK would
+remove the SageMaker endpoint and the AgentCore runtime; `cdk deploy` warns when either is missing.
 
 ## Demo script (5 minutes)
 
@@ -263,6 +272,8 @@ and is deleted with it.
 
 ## Learning guides
 
+Start with [How to run this project](docs/how-to-run.md). Then, one guide per phase:
+
 1. [Foundation](docs/learn/01-foundation.md): the CDK app, budgets, S3 buckets, the Glue database, and the payment generator
 2. [Streaming](docs/learn/02-streaming.md): API Gateway, an ingest Lambda, SQS FIFO, a scorer Lambda, DynamoDB, and SNS
 3. [Machine learning](docs/learn/03-ml.md): XGBoost trained on SageMaker and served from a serverless endpoint
@@ -276,7 +287,7 @@ and is deleted with it.
 
 - Built a serverless real-time UPI fraud detection pipeline on AWS (API Gateway, Lambda, SQS FIFO,
   DynamoDB, SNS) that scores payments in 1.2 s p50 / 1.9 s p95 from event to alert, defined
-  entirely in AWS CDK (Python) with 80 pytest and CDK-assertion tests in CI.
+  entirely in AWS CDK (Python) with 82 pytest and CDK-assertion tests in CI.
 - Trained an XGBoost fraud model on SageMaker and served it from a serverless endpoint with a
   rules fallback, raising F1 from 0.75 (rules) to 0.935 offline. On live traffic it reached
   precision 0.981 and recall 0.907.

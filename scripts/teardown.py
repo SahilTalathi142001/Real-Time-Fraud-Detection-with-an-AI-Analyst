@@ -13,6 +13,7 @@ the destroy; this script removes them too. Shared groups such as /aws-glue/jobs/
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 
@@ -88,10 +89,15 @@ def main() -> int:
             print("Cancelled.")
             return 1
 
+    # shutil.which finds cdk.cmd on Windows, which a bare "cdk" in subprocess would not.
+    cdk = shutil.which("cdk")
+    if not cdk:
+        print("The AWS CDK CLI isn't on PATH. Install it with: npm install -g aws-cdk")
+        return 1
     if args.dry_run:
-        subprocess.run(["cdk", "list"], check=True)
+        subprocess.run([cdk, "list"], check=True)
     else:
-        subprocess.run(["cdk", "destroy", "--all", "--force"], check=True)
+        subprocess.run([cdk, "destroy", "--all", "--force"], check=True)
 
     logs = session.client("logs")
     prefixes = PROJECT_LOG_PREFIXES + (SHARED_LOG_PREFIXES if args.shared_logs else ())

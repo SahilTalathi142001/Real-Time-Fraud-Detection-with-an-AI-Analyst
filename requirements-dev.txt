@@ -1,7 +1,9 @@
 -r requirements.txt
 pytest>=8.0
 moto[dynamodb,sns,sqs]>=5.0
-xgboost-cpu>=2.0
+# xgboost-cpu (no GPU libraries, smaller) has no macOS wheels; on macOS xgboost needs `brew install libomp`
+xgboost-cpu>=2.0; sys_platform != "darwin"
+xgboost>=2.0; sys_platform == "darwin"
 numpy>=1.26
 # AI analyst (phase 5): the agent code, the Streamlit UI, and their tests
 strands-agents==1.62.0

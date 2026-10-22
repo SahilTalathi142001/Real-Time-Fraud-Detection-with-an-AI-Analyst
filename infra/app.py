@@ -110,6 +110,20 @@ def build_app(context: dict | None = None) -> cdk.App:
         env=env,
     )
 
+    # ml/latest_model.json and build/analyst_runtime.zip are git-ignored, so a fresh clone has neither.
+    # Deploying then would delete a live endpoint or runtime, so say so loudly.
+    if not ml.has_endpoint:
+        cdk.Annotations.of(ml).add_warning_v2(
+            "fraud:no-model",
+            "No trained model: FraudMl gets no endpoint and the scorer uses rules only. If a model was "
+            "trained before, run `python -m ml.pipeline use-latest` first (or `train` on a new account).",
+        )
+    if not analyst.runtime_name:
+        cdk.Annotations.of(analyst).add_warning_v2(
+            "fraud:no-runtime-zip",
+            "No build/analyst_runtime.zip: FraudAnalyst gets no AgentCore runtime. Run `python -m agent package` first.",
+        )
+
     cdk.Tags.of(app).add("project", config.project_name)
     return app
 

@@ -1,5 +1,5 @@
 {
-  "app": "python3 -m infra.app",
+  "app": "python -m infra.app",
   "watch": {
     "include": [
       "infra/**",
