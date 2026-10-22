@@ -10,7 +10,7 @@ questions in plain English. Everything is Python, and the infrastructure is AWS 
 > 2. Streaming path: API Gateway, an ingest Lambda, SQS FIFO, a scorer Lambda, DynamoDB, and SNS
 > 3. ML: XGBoost trained on SageMaker and served from a serverless endpoint
 > 4. Lakehouse: an SQS buffer and loader Lambda into Iceberg bronze tables (via Athena), Glue silver and gold layers, and Athena views
-> 5. AI analyst: a Strands agent on AgentCore with a Knowledge Base on S3 Vectors, plus a Streamlit UI
+> 5. AI analyst: a Strands agent (Claude Haiku 4.5) on AgentCore Runtime, with Athena SQL, DynamoDB alert and Knowledge Base (S3 Vectors) tools, plus a Streamlit console
 > 6. Polish: a dashboard, the README, the architecture diagram, cost notes, and teardown steps
 >
 > Beginner-friendly guides for each phase live in [`docs/learn/`](docs/learn/).

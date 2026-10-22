@@ -120,6 +120,15 @@ def test_recent_alerts_newest_first_with_score_filter(backends):
     assert "error" in tools.recent_alerts(backends, "22/10/2026")
 
 
+def test_alerts_carry_runbook_severity_and_ist_time(backends):
+    by_id = {a["txn_id"]: a for a in tools.recent_alerts(backends, DAY, limit=50)["alerts"]}
+    assert by_id["t0"]["severity"] == "CRITICAL"  # 0.99
+    assert by_id["t1"]["severity"] == "HIGH"  # 0.94
+    assert by_id["t10"]["severity"] == "MEDIUM"  # 0.70
+    assert by_id["t0"]["event_time_ist"] == "2026-10-22 15:30:00 IST"  # 10:00 UTC
+    assert tools.get_alert(backends, "t0")["severity"] == "CRITICAL"
+
+
 def test_summarize_counts_in_code(backends):
     s = tools.summarize_alerts(backends, DAY)
     assert s["total_alerts"] == 7 and s["distinct_payers"] == 2

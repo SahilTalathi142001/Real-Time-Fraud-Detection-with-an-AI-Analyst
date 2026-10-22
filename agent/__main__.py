@@ -5,6 +5,7 @@
     python -m agent ask "question"          ask the deployed AgentCore runtime
     python -m agent ask --local "question"  run the same agent in this process
     python -m agent chat [--local]          interactive conversation (keeps context between questions)
+    python -m agent eval [--local]          check answers against ground truth from DynamoDB/Athena
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def main() -> None:
     p = sub.add_parser("package")
     p.add_argument("--skip-deps", action="store_true", help="reuse build/analyst_pkg, only refresh our code")
     sub.add_parser("ingest-kb")
-    for name in ("ask", "chat"):
+    for name in ("ask", "chat", "eval"):
         p = sub.add_parser(name)
         p.add_argument("--local", action="store_true")
         p.add_argument("--quiet", action="store_true", help="hide the tool trace")
@@ -69,6 +70,12 @@ def main() -> None:
     else:
         analyst = LocalAnalyst() if args.local else RemoteAnalyst()
         session = new_session_id()
+        if args.cmd == "eval":
+            from agent.client import use_deployed_settings
+            from agent.evals import run
+
+            use_deployed_settings()
+            raise SystemExit(1 if run(analyst, new_session_id) else 0)
         if args.cmd == "ask":
             print_answer(analyst.ask(args.question, session), not args.quiet)
             return

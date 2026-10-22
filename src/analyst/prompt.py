@@ -48,6 +48,8 @@ are the "confirmed fraud" labels in this demo. Say so when you use them, e.g. "p
 - Use a small markdown table for lists of more than three items.
 - When ranking rates, mention tiny samples (fewer than 20 transactions) instead of headlining them.
 - For a single alert, explain the top reasons in plain words and suggest the next action from the playbook.
+- Alerts come with `severity` and `event_time_ist` already computed: use them as given, don't re-derive them.
+- Plain professional tone: no emojis.
 - End with a one-line "Source:" naming the tables or tools you used.
 - If the data cannot answer the question, say what is missing. Never invent transactions, payers or numbers.
 """

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
@@ -24,6 +24,7 @@ ALERT_SUMMARY_FIELDS = (
     "channel", "city", "device_id", "score", "scored_by", "reasons", "status", "sim_label_pattern",
 )
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+IST = timezone(timedelta(hours=5, minutes=30))
 MAX_ALERTS = 50
 MAX_SUMMARY_ITEMS = 5000
 SUMMARY_PROJECTION = "payer_id, payer_vpa, amount, reasons, score, scored_by, sim_label_pattern, city, event_time"
@@ -51,8 +52,26 @@ def plain(value):
     return value
 
 
+def severity(score: float) -> str:
+    """Runbook severity bands (kb/alert-triage-runbook.md); computed here so the model never has to."""
+    return "CRITICAL" if score >= 0.95 else "HIGH" if score >= 0.85 else "MEDIUM"
+
+
+def to_ist(event_time: str) -> str:
+    ts = datetime.fromisoformat(event_time.replace("Z", "+00:00")).astimezone(IST)
+    return ts.strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+def _enrich(item: dict) -> dict:
+    if "score" in item:
+        item["severity"] = severity(float(item["score"]))
+    if "event_time" in item:
+        item["event_time_ist"] = to_ist(item["event_time"])
+    return item
+
+
 def _summary(item: dict) -> dict:
-    return {k: plain(item[k]) for k in ALERT_SUMMARY_FIELDS if k in item}
+    return _enrich({k: plain(item[k]) for k in ALERT_SUMMARY_FIELDS if k in item})
 
 
 def query_lakehouse(b: Backends, sql: str) -> dict:
@@ -175,7 +194,7 @@ def get_alert(b: Backends, txn_id: str) -> dict:
         return {"error": f"no alert for transaction {txn_id!r} (it may not have been flagged)"}
     item = plain(item)
     item.pop("expires_at", None)
-    return item
+    return _enrich(item)
 
 
 def search_playbook(b: Backends, query: str, max_results: int = 4) -> dict:

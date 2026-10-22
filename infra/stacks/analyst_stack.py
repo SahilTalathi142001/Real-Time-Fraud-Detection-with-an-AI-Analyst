@@ -13,12 +13,14 @@ from __future__ import annotations
 from aws_cdk import (
     Annotations,
     CfnOutput,
+    Fn,
     RemovalPolicy,
     Stack,
     aws_bedrock as bedrock,
     aws_bedrockagentcore as agentcore,
     aws_dynamodb as dynamodb,
     aws_iam as iam,
+    aws_logs as logs,
     aws_s3 as s3,
     aws_s3_assets as assets,
     aws_s3_deployment as s3deploy,
@@ -224,6 +226,14 @@ class AnalystStack(Stack):
                 },
             )
             runtime.node.add_dependency(runtime_role)
+            # AgentCore creates this log group itself on first use, with no expiry.
+            logs.LogRetention(
+                self,
+                "RuntimeLogRetention",
+                log_group_name=Fn.join("", ["/aws/bedrock-agentcore/runtimes/", runtime.attr_agent_runtime_id, "-DEFAULT"]),
+                retention=logs.RetentionDays.ONE_WEEK,
+                removal_policy=RemovalPolicy.DESTROY,
+            )
             self.runtime_arn = runtime.attr_agent_runtime_arn
             CfnOutput(self, "AgentRuntimeArn", value=runtime.attr_agent_runtime_arn)
         else:
