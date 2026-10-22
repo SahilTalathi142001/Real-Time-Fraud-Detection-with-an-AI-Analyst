@@ -7,6 +7,7 @@ import aws_cdk as cdk
 
 from infra.config import ProjectConfig
 from infra.stacks.foundation_stack import FoundationStack
+from infra.stacks.streaming_stack import StreamingStack
 
 
 def build_app(context: dict | None = None) -> cdk.App:
@@ -18,6 +19,7 @@ def build_app(context: dict | None = None) -> cdk.App:
     )
 
     FoundationStack(app, "FraudFoundation", config=config, env=env)
+    StreamingStack(app, "FraudStreaming", config=config, env=env)
 
     cdk.Tags.of(app).add("project", config.project_name)
     return app
