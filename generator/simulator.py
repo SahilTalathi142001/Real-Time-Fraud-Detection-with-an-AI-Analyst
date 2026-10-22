@@ -98,8 +98,11 @@ class PaymentSimulator:
         fraud_rate: float = 0.01,
         seed: int | None = 42,
         start_ts_ms: int | None = None,
+        population_seed: int = 2026,
     ) -> None:
-        self.rng = random.Random(seed)
+        # The population (users, devices, home cities) is fixed across runs so that
+        # profiles the scorer remembers from yesterday still match today's users.
+        self.rng = random.Random(population_seed)
         self.fraud_rate = fraud_rate
         self.now_ms = start_ts_ms if start_ts_ms is not None else int(datetime.now(timezone.utc).timestamp() * 1000)
         self._seq = itertools.count()
@@ -107,6 +110,7 @@ class PaymentSimulator:
         self._device_counter = itertools.count(1)
         self.users = [self._make_user(i) for i in range(num_users)]
         self.merchants = [self._make_merchant(i) for i in range(num_merchants)]
+        self.rng = random.Random(seed)
 
     def _new_device(self) -> tuple[str, str]:
         return (f"dev-{next(self._device_counter):07d}", self.rng.choice(DEVICE_OS))

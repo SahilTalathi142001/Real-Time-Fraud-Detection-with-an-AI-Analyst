@@ -35,3 +35,6 @@ outputs.json
 # Secrets
 .env
 .env.*
+
+# Points at a model artifact in your own AWS account
+ml/latest_model.json
