@@ -11,18 +11,24 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Handlers create boto3 clients at import time, which needs a region. The fake credentials
+    # make sure no test can reach a real AWS account.
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements*.txt
       # CDK synthesis runs on Node (jsii); the Glue job tests run on local Spark (Java 17).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
