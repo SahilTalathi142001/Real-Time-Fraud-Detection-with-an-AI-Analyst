@@ -3,6 +3,7 @@
 Examples:
     python -m generator file --count 5000 --out data/payments.jsonl
     python -m generator stdout --count 5
+    python -m generator live --duration 120          # needs the FraudStreaming stack
 """
 
 import argparse
@@ -44,6 +45,11 @@ def main(argv: list[str] | None = None) -> None:
     p_out = sub.add_parser("stdout", help="print JSON Lines")
     p_out.add_argument("--count", type=int, default=10)
 
+    p_live = sub.add_parser("live", help="send events to the deployed API in real time")
+    p_live.add_argument("--url", default="auto", help="API URL, or 'auto' to read the FraudStreaming stack output")
+    p_live.add_argument("--duration", type=float, default=60, help="seconds to run")
+    p_live.add_argument("--max-events", type=int, default=None)
+
     args = parser.parse_args(argv)
     sim = PaymentSimulator(args.users, args.merchants, args.fraud_rate, args.seed)
 
@@ -52,6 +58,15 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "stdout":
         for event in sim.generate(args.count, args.rate):
             sys.stdout.write(json.dumps(event) + "\n")
+    elif args.mode == "live":
+        from generator.sender import SignedPoster, run_live, stack_output
+
+        url = stack_output("FraudStreaming", "PaymentsApiUrl") if args.url == "auto" else args.url
+        print(f"Sending ~{args.rate}/s to {url} for {args.duration:.0f}s")
+        stats = run_live(sim, SignedPoster(url), args.duration, args.rate, args.max_events)
+        print(f"Done: sent {stats['sent']}, accepted {stats['accepted']}, rejected {stats['rejected']}")
+        for key in sorted(k for k in stats if k.startswith("pattern:")):
+            print(f"  {key[8:]:<24}{stats[key]}")
 
 
 if __name__ == "__main__":
