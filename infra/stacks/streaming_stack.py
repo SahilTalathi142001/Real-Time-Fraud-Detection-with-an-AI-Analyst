@@ -40,7 +40,7 @@ class StreamingStack(Stack):
         *,
         config: ProjectConfig,
         model_endpoint_name: str | None = None,
-        scores_firehose_name: str | None = None,
+        lake_queue: sqs.IQueue | None = None,
         alert_threshold: float = 0.6,
         **kwargs,
     ) -> None:
@@ -138,7 +138,7 @@ class StreamingStack(Stack):
                 "ALERT_TOPIC_ARN": self.alert_topic.topic_arn,
                 "ALERT_THRESHOLD": str(alert_threshold),
                 "MODEL_ENDPOINT": model_endpoint_name or "",
-                "SCORES_FIREHOSE": scores_firehose_name or "",
+                "LAKE_QUEUE_URL": lake_queue.queue_url if lake_queue else "",
                 "EMAIL_MIN_SCORE": "0.9",
                 "MAX_EMAILS_PER_HOUR": "10",
             },
@@ -146,14 +146,8 @@ class StreamingStack(Stack):
         self.profiles_table.grant_read_write_data(self.scorer_fn)
         self.alerts_table.grant_read_write_data(self.scorer_fn)
         self.alert_topic.grant_publish(self.scorer_fn)
-        if scores_firehose_name:
-            # By name, not by reference: the lakehouse stack depends on this stack's Kinesis stream.
-            self.scorer_fn.add_to_role_policy(
-                iam.PolicyStatement(
-                    actions=["firehose:PutRecordBatch"],
-                    resources=[f"arn:aws:firehose:{self.region}:{self.account}:deliverystream/{scores_firehose_name}"],
-                )
-            )
+        if lake_queue:
+            lake_queue.grant_send_messages(self.scorer_fn)
         if model_endpoint_name:
             self.scorer_fn.add_to_role_policy(
                 iam.PolicyStatement(

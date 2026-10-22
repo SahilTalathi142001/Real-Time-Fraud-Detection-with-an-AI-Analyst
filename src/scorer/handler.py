@@ -5,7 +5,7 @@ For each batch of payment messages (up to 10; payments of one payer always arriv
 2. compute features and score (rules now, ML model from phase 3),
 3. save updated profiles, write alerts to DynamoDB,
 4. email the most severe alerts through SNS (throttled so a demo doesn't flood the inbox),
-5. send every score to Firehose, which appends it to the bronze_scores Iceberg table,
+5. send every payment + score to the SQS lake buffer (the loader appends them to the bronze Iceberg tables),
 6. emit CloudWatch metrics using the Embedded Metric Format (structured logs, no extra API calls).
 """
 
@@ -28,7 +28,7 @@ ALERTS_TABLE = os.environ.get("ALERTS_TABLE", "")
 ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
 ALERT_THRESHOLD = float(os.environ.get("ALERT_THRESHOLD", "0.6"))
 MODEL_ENDPOINT = os.environ.get("MODEL_ENDPOINT", "")
-SCORES_FIREHOSE = os.environ.get("SCORES_FIREHOSE", "")
+LAKE_QUEUE_URL = os.environ.get("LAKE_QUEUE_URL", "")
 EMAIL_MIN_SCORE = float(os.environ.get("EMAIL_MIN_SCORE", "0.9"))
 MAX_EMAILS_PER_HOUR = int(os.environ.get("MAX_EMAILS_PER_HOUR", "10"))
 PROFILE_TTL_DAYS = 30
@@ -37,7 +37,7 @@ THROTTLE_KEY_PREFIX = "__email_throttle__#"
 
 dynamodb = boto3.resource("dynamodb")
 sns = boto3.client("sns")
-firehose = boto3.client("firehose")
+sqs = boto3.client("sqs")
 # Serverless endpoints can take ~10-20s on a cold start; past that we fall back to rules.
 sagemaker_runtime = boto3.client(
     "sagemaker-runtime", config=Config(read_timeout=25, connect_timeout=5, retries={"max_attempts": 2})
@@ -122,19 +122,22 @@ def score_record(r: ScoredTxn, scored_at_ms: int) -> dict:
     }
 
 
-def _ship_scores(results: list[ScoredTxn]) -> int:
+def _ship_to_lake(results: list[ScoredTxn]) -> int:
     """Best effort: a lake hiccup must never block real-time scoring."""
-    if not SCORES_FIREHOSE or not results:
+    if not LAKE_QUEUE_URL or not results:
         return 0
     now_ms = int(time.time() * 1000)
-    records = [{"Data": (json.dumps(score_record(r, now_ms)) + "\n").encode()} for r in results]
     failed = 0
-    for i in range(0, len(records), 500):
+    for i in range(0, len(results), 10):
+        entries = [
+            {"Id": str(j), "MessageBody": json.dumps({"payment": r.txn, "score": score_record(r, now_ms)}, separators=(",", ":"))}
+            for j, r in enumerate(results[i : i + 10])
+        ]
         try:
-            failed += firehose.put_record_batch(DeliveryStreamName=SCORES_FIREHOSE, Records=records[i : i + 500])["FailedPutCount"]
+            failed += len(sqs.send_message_batch(QueueUrl=LAKE_QUEUE_URL, Entries=entries).get("Failed", []))
         except ClientError as e:
-            print(json.dumps({"level": "WARN", "msg": "firehose put failed", "error": str(e)[:200]}))
-            failed += len(records[i : i + 500])
+            print(json.dumps({"level": "WARN", "msg": "lake buffer send failed", "error": str(e)[:200]}))
+            failed += len(entries)
     return failed
 
 
@@ -212,9 +215,17 @@ def _emit_metrics(results: list[ScoredTxn], emails: int, duration_ms: float, lak
     )
 
 
-def invoke_model(rows) -> list[float]:
+def invoke_model(rows, attempts: int = 4) -> list[float]:
     body = "\n".join(",".join(f"{v:.5f}" for v in row) for row in rows)
-    resp = sagemaker_runtime.invoke_endpoint(EndpointName=MODEL_ENDPOINT, ContentType="text/csv", Body=body)
+    for attempt in range(attempts):
+        try:
+            resp = sagemaker_runtime.invoke_endpoint(EndpointName=MODEL_ENDPOINT, ContentType="text/csv", Body=body)
+            break
+        except ClientError as e:
+            # A serverless endpoint answers ModelError while it brings up extra capacity; botocore won't retry that.
+            if e.response["Error"]["Code"] != "ModelError" or attempt == attempts - 1:
+                raise
+            time.sleep(0.5 * 2**attempt)
     scores = [float(x) for x in resp["Body"].read().decode().replace("\n", ",").split(",") if x.strip()]
     if len(scores) != len(rows):
         raise ValueError(f"endpoint returned {len(scores)} scores for {len(rows)} rows")
@@ -252,9 +263,12 @@ def handler(event, context):
         emailed_payers.add(r.txn["payer_id"])
         emails += 1
 
+    model_errors = {r.extra["model_error"] for r in results if "model_error" in r.extra}
+    if model_errors:
+        print(json.dumps({"level": "WARN", "msg": "model unavailable, scored with rules", "errors": sorted(model_errors)}))
     for r in alerts:
         print(json.dumps({"level": "ALERT", "txn_id": r.txn["txn_id"], "payer_id": r.txn["payer_id"],
                           "score": round(r.score, 3), "reasons": r.reasons}))
-    lake_failures = _ship_scores(results)
+    lake_failures = _ship_to_lake(results)
     _emit_metrics(results, emails, (time.time() - started) * 1000, lake_failures)
     return {"scored": len(results), "alerts": len(alerts), "emails": emails}

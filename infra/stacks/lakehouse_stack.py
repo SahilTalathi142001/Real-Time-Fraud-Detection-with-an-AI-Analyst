@@ -1,11 +1,13 @@
 """Phase 4: the Iceberg lakehouse.
 
-Bronze (raw, append-only, written by Firehose):
-    Kinesis payments stream --Firehose--> bronze_payments
-    scorer Lambda          --Firehose--> bronze_scores
+Bronze (raw, append-only):
+    scorer Lambda --SQS lake buffer--> loader Lambda (every 5 min) --Athena INSERT--> bronze_payments, bronze_scores
 Silver/gold (curated, rebuilt on demand by a Glue PySpark job):
     silver_transactions, gold_fraud_daily, gold_payer_risk, gold_detection_quality
 Athena (workgroup with a per-query scan limit) queries all of it.
+
+The buffer + loader stands in for Amazon Data Firehose, which this account's Free plan can't use.
+See docs/production-version.md.
 """
 
 from aws_cdk import (
@@ -14,35 +16,22 @@ from aws_cdk import (
     RemovalPolicy,
     Stack,
     aws_athena as athena,
+    aws_events as events,
+    aws_events_targets as targets,
     aws_glue as glue,
     aws_iam as iam,
-    aws_kinesis as kinesis,
-    aws_kinesisfirehose as firehose,
+    aws_lambda as lambda_,
     aws_logs as logs,
     aws_s3 as s3,
     aws_s3_assets as assets,
+    aws_sqs as sqs,
 )
 from constructs import Construct
 
+from common.lake_schema import LAKE_TABLES
 from infra.config import ProjectConfig
 
-PAYMENT_COLUMNS = [
-    ("txn_id", "string"), ("event_time", "string"), ("event_ts_ms", "bigint"),
-    ("payer_id", "string"), ("payer_vpa", "string"), ("payee_vpa", "string"), ("payee_type", "string"),
-    ("merchant_id", "string"), ("merchant_category", "string"), ("amount", "double"), ("currency", "string"),
-    ("channel", "string"), ("device_id", "string"), ("device_os", "string"), ("ip_address", "string"),
-    ("city", "string"), ("lat", "double"), ("lon", "double"),
-    ("label_is_fraud", "boolean"), ("label_pattern", "string"), ("ingested_at_ms", "bigint"),
-]
-SCORE_COLUMNS = [
-    ("txn_id", "string"), ("event_time", "string"), ("event_ts_ms", "bigint"), ("payer_id", "string"),
-    ("score", "double"), ("rule_score", "double"), ("model_score", "double"), ("is_alert", "boolean"),
-    ("scored_by", "string"), ("reasons", "string"), ("scored_at_ms", "bigint"),
-]
-
-
-def scores_firehose_name(config: ProjectConfig) -> str:
-    return f"{config.project_name}-scores-to-iceberg"
+LAMBDA_CODE_EXCLUDES = ["glue_jobs", "**/__pycache__", "**/*.pyc"]
 
 
 class LakehouseStack(Stack):
@@ -55,83 +44,104 @@ class LakehouseStack(Stack):
         lake_bucket: s3.IBucket,
         athena_results_bucket: s3.IBucket,
         database_name: str,
-        payments_stream: kinesis.IStream,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
         name = config.project_name
         self.database_name = database_name
         warehouse = f"s3://{lake_bucket.bucket_name}/warehouse"
+        catalog_arns = [
+            f"arn:aws:glue:{self.region}:{self.account}:catalog",
+            f"arn:aws:glue:{self.region}:{self.account}:database/{database_name}",
+            f"arn:aws:glue:{self.region}:{self.account}:table/{database_name}/*",
+        ]
 
-        payments_table = self._iceberg_table("BronzePayments", "bronze_payments", PAYMENT_COLUMNS, f"{warehouse}/bronze_payments")
-        scores_table = self._iceberg_table("BronzeScores", "bronze_scores", SCORE_COLUMNS, f"{warehouse}/bronze_scores")
+        for kind, (landing, bronze, columns) in LAKE_TABLES.items():
+            self._landing_table(f"Landing{kind.title()}", landing, columns, f"s3://{lake_bucket.bucket_name}/landing/{kind}/")
+            self._iceberg_table(f"Bronze{kind.title()}", bronze, columns, f"{warehouse}/{bronze}")
 
-        # ---- Firehose: bronze ingestion ----------------------------------------------------
-        firehose_role = iam.Role(self, "FirehoseRole", assumed_by=iam.ServicePrincipal("firehose.amazonaws.com"))
-        lake_bucket.grant_read_write(firehose_role)
-        payments_stream.grant_read(firehose_role)
-        firehose_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["glue:GetDatabase", "glue:GetTable", "glue:UpdateTable"],
-                resources=[
-                    f"arn:aws:glue:{self.region}:{self.account}:catalog",
-                    f"arn:aws:glue:{self.region}:{self.account}:database/{database_name}",
-                    f"arn:aws:glue:{self.region}:{self.account}:table/{database_name}/*",
-                ],
-            )
-        )
-        firehose_logs = logs.LogGroup(
-            self, "FirehoseLogs", log_group_name=f"/aws/firehose/{name}",
-            retention=logs.RetentionDays.ONE_WEEK, removal_policy=RemovalPolicy.DESTROY,
-        )
-        firehose_logs.grant_write(firehose_role)
-
-        def iceberg_destination(table: str, stream_name: str):
-            log_stream = logs.LogStream(self, f"{stream_name}LogStream", log_group=firehose_logs, log_stream_name=stream_name)
-            return firehose.CfnDeliveryStream.IcebergDestinationConfigurationProperty(
-                catalog_configuration=firehose.CfnDeliveryStream.CatalogConfigurationProperty(
-                    catalog_arn=f"arn:aws:glue:{self.region}:{self.account}:catalog"
-                ),
-                role_arn=firehose_role.role_arn,
-                destination_table_configuration_list=[
-                    firehose.CfnDeliveryStream.DestinationTableConfigurationProperty(
-                        destination_database_name=database_name, destination_table_name=table
-                    )
-                ],
-                append_only=True,
-                # Larger buffers mean fewer, bigger files; 60s keeps the demo feeling "live".
-                buffering_hints=firehose.CfnDeliveryStream.BufferingHintsProperty(interval_in_seconds=60, size_in_m_bs=16),
-                s3_backup_mode="FailedDataOnly",
-                s3_configuration=firehose.CfnDeliveryStream.S3DestinationConfigurationProperty(
-                    bucket_arn=lake_bucket.bucket_arn,
-                    role_arn=firehose_role.role_arn,
-                    error_output_prefix=f"firehose-errors/{table}/",
-                ),
-                cloud_watch_logging_options=firehose.CfnDeliveryStream.CloudWatchLoggingOptionsProperty(
-                    enabled=True, log_group_name=firehose_logs.log_group_name, log_stream_name=log_stream.log_stream_name
-                ),
-            )
-
-        payments_firehose = firehose.CfnDeliveryStream(
+        # ---- Athena ------------------------------------------------------------------------
+        self.workgroup_name = name
+        workgroup = athena.CfnWorkGroup(
             self,
-            "PaymentsToIceberg",
-            delivery_stream_name=f"{name}-payments-to-iceberg",
-            delivery_stream_type="KinesisStreamAsSource",
-            kinesis_stream_source_configuration=firehose.CfnDeliveryStream.KinesisStreamSourceConfigurationProperty(
-                kinesis_stream_arn=payments_stream.stream_arn, role_arn=firehose_role.role_arn
+            "Workgroup",
+            name=self.workgroup_name,
+            description="Fraud analyst queries (1 GB scan limit per query)",
+            recursive_delete_option=True,
+            work_group_configuration=athena.CfnWorkGroup.WorkGroupConfigurationProperty(
+                enforce_work_group_configuration=True,
+                publish_cloud_watch_metrics_enabled=True,
+                bytes_scanned_cutoff_per_query=1_000_000_000,
+                engine_version=athena.CfnWorkGroup.EngineVersionProperty(selected_engine_version="Athena engine version 3"),
+                result_configuration=athena.CfnWorkGroup.ResultConfigurationProperty(
+                    output_location=f"s3://{athena_results_bucket.bucket_name}/results/",
+                    encryption_configuration=athena.CfnWorkGroup.EncryptionConfigurationProperty(encryption_option="SSE_S3"),
+                ),
             ),
-            iceberg_destination_configuration=iceberg_destination("bronze_payments", "payments"),
         )
-        scores_firehose = firehose.CfnDeliveryStream(
+        for query_name, description, sql in SAMPLE_QUERIES:
+            q = athena.CfnNamedQuery(
+                self, f"Query{query_name.title().replace('_', '')}", name=query_name, description=description,
+                database=database_name, work_group=self.workgroup_name, query_string=sql,
+            )
+            q.node.add_dependency(workgroup)
+
+        # ---- Bronze ingestion: SQS lake buffer + scheduled loader -------------------------------
+        self.lake_buffer_dlq = sqs.Queue(self, "LakeBufferDlq", queue_name=f"{name}-lake-buffer-dlq", retention_period=Duration.days(14))
+        self.lake_buffer = sqs.Queue(
             self,
-            "ScoresToIceberg",
-            delivery_stream_name=scores_firehose_name(config),
-            delivery_stream_type="DirectPut",
-            iceberg_destination_configuration=iceberg_destination("bronze_scores", "scores"),
+            "LakeBuffer",
+            queue_name=f"{name}-lake-buffer",
+            retention_period=Duration.days(4),
+            visibility_timeout=Duration.minutes(15),  # longer than one loader run
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            dead_letter_queue=sqs.DeadLetterQueue(queue=self.lake_buffer_dlq, max_receive_count=5),
         )
-        for stream, table in ((payments_firehose, payments_table), (scores_firehose, scores_table)):
-            stream.node.add_dependency(table)
-            stream.node.add_dependency(firehose_role)
+
+        self.loader_fn = lambda_.Function(
+            self,
+            "LakeLoaderFn",
+            function_name=f"{name}-lake-loader",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
+            handler="lake_loader.handler.handler",
+            code=lambda_.Code.from_asset("src", exclude=LAMBDA_CODE_EXCLUDES),
+            memory_size=512,
+            timeout=Duration.minutes(5),
+            environment={
+                "LAKE_QUEUE_URL": self.lake_buffer.queue_url,
+                "LAKE_BUCKET": lake_bucket.bucket_name,
+                "GLUE_DATABASE": database_name,
+                "ATHENA_WORKGROUP": self.workgroup_name,
+            },
+            log_group=logs.LogGroup(
+                self, "LakeLoaderLogs", log_group_name=f"/aws/lambda/{name}-lake-loader",
+                retention=logs.RetentionDays.ONE_WEEK, removal_policy=RemovalPolicy.DESTROY,
+            ),
+        )
+        self.lake_buffer.grant_consume_messages(self.loader_fn)
+        lake_bucket.grant_read_write(self.loader_fn)
+        lake_bucket.grant_delete(self.loader_fn)
+        athena_results_bucket.grant_read_write(self.loader_fn)
+        self.loader_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"],
+                resources=[f"arn:aws:athena:{self.region}:{self.account}:workgroup/{self.workgroup_name}"],
+            )
+        )
+        self.loader_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["glue:GetDatabase", "glue:GetTable", "glue:GetTables", "glue:GetPartitions", "glue:UpdateTable"],
+                resources=catalog_arns,
+            )
+        )
+        events.Rule(
+            self,
+            "LakeLoaderSchedule",
+            rule_name=f"{name}-lake-loader-every-5-min",
+            schedule=events.Schedule.rate(Duration.minutes(5)),
+            targets=[targets.LambdaFunction(self.loader_fn, retry_attempts=0)],
+        )
 
         # ---- Glue PySpark job: silver + gold -----------------------------------------------
         script = assets.Asset(self, "SilverGoldScript", path="src/glue_jobs/silver_gold.py")
@@ -146,11 +156,7 @@ class LakehouseStack(Stack):
         glue_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["glue:GetDatabase", "glue:GetTable", "glue:GetTables", "glue:CreateTable", "glue:UpdateTable", "glue:DeleteTable"],
-                resources=[
-                    f"arn:aws:glue:{self.region}:{self.account}:catalog",
-                    f"arn:aws:glue:{self.region}:{self.account}:database/{database_name}",
-                    f"arn:aws:glue:{self.region}:{self.account}:table/{database_name}/*",
-                ],
+                resources=catalog_arns,
             )
         )
         iceberg_conf = " --conf ".join(
@@ -185,36 +191,34 @@ class LakehouseStack(Stack):
             },
         )
 
-        # ---- Athena ------------------------------------------------------------------------
-        self.workgroup_name = name
-        workgroup = athena.CfnWorkGroup(
+        CfnOutput(self, "AthenaWorkgroup", value=self.workgroup_name)
+        CfnOutput(self, "GlueJobName", value=self.glue_job_name)
+        CfnOutput(self, "LakeBufferUrl", value=self.lake_buffer.queue_url)
+        CfnOutput(self, "LakeLoaderFunction", value=self.loader_fn.function_name)
+
+    def _landing_table(self, construct_id: str, table: str, columns: list[tuple[str, str]], location: str) -> glue.CfnTable:
+        return glue.CfnTable(
             self,
-            "Workgroup",
-            name=self.workgroup_name,
-            description="Fraud analyst queries (1 GB scan limit per query)",
-            recursive_delete_option=True,
-            work_group_configuration=athena.CfnWorkGroup.WorkGroupConfigurationProperty(
-                enforce_work_group_configuration=True,
-                publish_cloud_watch_metrics_enabled=True,
-                bytes_scanned_cutoff_per_query=1_000_000_000,
-                engine_version=athena.CfnWorkGroup.EngineVersionProperty(selected_engine_version="Athena engine version 3"),
-                result_configuration=athena.CfnWorkGroup.ResultConfigurationProperty(
-                    output_location=f"s3://{athena_results_bucket.bucket_name}/results/",
-                    encryption_configuration=athena.CfnWorkGroup.EncryptionConfigurationProperty(encryption_option="SSE_S3"),
+            construct_id,
+            catalog_id=self.account,
+            database_name=self.database_name,
+            table_input=glue.CfnTable.TableInputProperty(
+                name=table,
+                table_type="EXTERNAL_TABLE",
+                description="Landing zone: JSON Lines files the loader writes and immediately inserts into bronze",
+                parameters={"classification": "json"},
+                storage_descriptor=glue.CfnTable.StorageDescriptorProperty(
+                    location=location,
+                    columns=[glue.CfnTable.ColumnProperty(name=n, type=t) for n, t in columns],
+                    input_format="org.apache.hadoop.mapred.TextInputFormat",
+                    output_format="org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+                    serde_info=glue.CfnTable.SerdeInfoProperty(
+                        serialization_library="org.openx.data.jsonserde.JsonSerDe",
+                        parameters={"ignore.malformed.json": "true"},
+                    ),
                 ),
             ),
         )
-        for query_name, description, sql in SAMPLE_QUERIES:
-            q = athena.CfnNamedQuery(
-                self, f"Query{query_name.title().replace('_', '')}", name=query_name, description=description,
-                database=database_name, work_group=self.workgroup_name, query_string=sql,
-            )
-            q.node.add_dependency(workgroup)
-
-        CfnOutput(self, "AthenaWorkgroup", value=self.workgroup_name)
-        CfnOutput(self, "GlueJobName", value=self.glue_job_name)
-        CfnOutput(self, "PaymentsFirehose", value=payments_firehose.ref)
-        CfnOutput(self, "ScoresFirehose", value=scores_firehose.ref)
 
     def _iceberg_table(self, construct_id: str, table: str, columns: list[tuple[str, str]], location: str) -> glue.CfnTable:
         return glue.CfnTable(
@@ -228,7 +232,7 @@ class LakehouseStack(Stack):
             table_input=glue.CfnTable.TableInputProperty(
                 name=table,
                 table_type="EXTERNAL_TABLE",
-                description=f"Bronze (raw) {table.split('_', 1)[1]} written by Firehose",
+                description=f"Bronze (raw) {table.split('_', 1)[1]}, appended by the lake loader",
                 storage_descriptor=glue.CfnTable.StorageDescriptorProperty(
                     location=location,
                     columns=[glue.CfnTable.ColumnProperty(name=n, type=t) for n, t in columns],
@@ -241,9 +245,11 @@ SAMPLE_QUERIES = [
     (
         "fraud_by_city_today",
         "Alert rate and money at risk by city for the latest day",
-        """SELECT city, txn_count, alert_count, round(alert_rate * 100, 2) AS alert_rate_pct, round(alert_amount) AS alert_amount_inr
+        """SELECT city, sum(txn_count) AS txn_count, sum(alert_count) AS alert_count,
+       round(100.0 * sum(alert_count) / sum(txn_count), 2) AS alert_rate_pct, round(sum(alert_amount)) AS alert_amount_inr
 FROM gold_fraud_daily
 WHERE event_date = (SELECT max(event_date) FROM gold_fraud_daily)
+GROUP BY city
 ORDER BY alert_count DESC""",
     ),
     (

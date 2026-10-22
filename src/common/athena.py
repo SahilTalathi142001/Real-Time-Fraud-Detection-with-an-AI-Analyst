@@ -1,6 +1,6 @@
 """Small Athena client: run a query in the project workgroup and return rows as dicts.
 
-Shared by the lakehouse CLI and the AI analyst's SQL tool.
+Shared by the lake loader Lambda, the lakehouse CLI, and the AI analyst's SQL tool.
 """
 
 from __future__ import annotations

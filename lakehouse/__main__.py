@@ -1,5 +1,6 @@
 """Lakehouse CLI.
 
+    python -m lakehouse load              # run the lake loader now (it also runs every 5 minutes)
     python -m lakehouse glue              # run the silver/gold Glue job and wait
     python -m lakehouse views             # create/refresh the Athena views
     python -m lakehouse query "SELECT ..."
@@ -9,11 +10,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 
 import boto3
 
-from lakehouse.athena import Athena
+from common.athena import Athena
 from lakehouse.views import VIEWS, create_view_sql
 
 
@@ -53,6 +55,7 @@ def cmd_glue(session: boto3.Session, job: str) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m lakehouse", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("load")
     sub.add_parser("glue")
     sub.add_parser("views")
     q = sub.add_parser("query")
@@ -65,7 +68,10 @@ def main(argv: list[str] | None = None) -> None:
     database = outputs(session, "FraudFoundation")["GlueDatabaseName"]
     athena = Athena(out["AthenaWorkgroup"], database, session)
 
-    if args.cmd == "glue":
+    if args.cmd == "load":
+        resp = session.client("lambda").invoke(FunctionName=out["LakeLoaderFunction"])
+        print(json.dumps(json.loads(resp["Payload"].read()), indent=2))
+    elif args.cmd == "glue":
         cmd_glue(session, out["GlueJobName"])
     elif args.cmd == "views":
         for name in VIEWS:

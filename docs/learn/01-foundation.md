@@ -113,7 +113,7 @@ Three fraud patterns are injected (about 2–4% of events):
 | --- | --- | --- |
 | `velocity_burst` | 6–12 P2P payments to "mule" accounts within about a minute | Account takeover draining funds |
 | `new_device_high_value` | Never-seen device, amount 15–60× normal (≥ ₹20,000), electronics/jewellery | SIM swap or stolen credentials |
-| `geo_jump` | Payment from a city >1000 km away a few minutes after a payment at home | Cloned credentials used elsewhere |
+| `geo_jump` | Payment from a city >1000 km away 1–8 minutes after a payment at home | Cloned credentials used elsewhere |
 
 There's also **legitimate noise** (occasional new phones, occasional big purchases) so the
 ML model in phase 3 can't just learn "new device = fraud".

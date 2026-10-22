@@ -8,3 +8,4 @@ license = { text = "MIT" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning", "ignore:.*UBJSON.*:UserWarning"]
