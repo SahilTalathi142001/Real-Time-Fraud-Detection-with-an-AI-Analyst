@@ -1,6 +1,6 @@
-"""Kinesis -> scorer Lambda.
+"""SQS FIFO -> scorer Lambda.
 
-For each batch of payment records:
+For each batch of payment messages (up to 10; payments of one payer always arrive in order):
 1. load payer profiles from DynamoDB,
 2. compute features and score (rules now, ML model from phase 3),
 3. save updated profiles, write alerts to DynamoDB,
@@ -10,7 +10,6 @@ For each batch of payment records:
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import time
@@ -37,7 +36,7 @@ sns = boto3.client("sns")
 
 
 def _decode(records: list[dict]) -> list[dict]:
-    return [json.loads(base64.b64decode(r["kinesis"]["data"])) for r in records]
+    return [json.loads(r["body"]) for r in records]
 
 
 def _load_profiles(payer_ids: set[str]) -> dict[str, dict]:

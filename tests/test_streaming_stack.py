@@ -1,11 +1,21 @@
 from aws_cdk.assertions import Match
 
 
-def test_single_provisioned_shard(template):
-    template("FraudStreaming").has_resource_properties(
-        "AWS::Kinesis::Stream",
-        {"ShardCount": 1, "StreamModeDetails": {"StreamMode": "PROVISIONED"}, "RetentionPeriodHours": 24},
+def test_fifo_queue_with_fifo_dlq(template):
+    t = template("FraudStreaming")
+    t.has_resource_properties(
+        "AWS::SQS::Queue",
+        {
+            "QueueName": "fraud-analyst-payments.fifo",
+            "FifoQueue": True,
+            "DeduplicationScope": "messageGroup",
+            "FifoThroughputLimit": "perMessageGroupId",
+            "VisibilityTimeout": 360,
+            "RedrivePolicy": Match.object_like({"maxReceiveCount": 3}),
+        },
     )
+    t.has_resource_properties("AWS::SQS::Queue", {"QueueName": "fraud-analyst-payments-dlq.fifo", "FifoQueue": True})
+    assert not t.find_resources("AWS::Kinesis::Stream")
 
 
 def test_tables_are_on_demand_with_ttl_and_alert_indexes(template):
@@ -27,16 +37,10 @@ def test_api_requires_iam_auth_and_is_throttled(template):
     )
 
 
-def test_scorer_reads_stream_in_order_with_dlq(template):
+def test_scorer_consumes_queue_in_small_batches(template):
     template("FraudStreaming").has_resource_properties(
         "AWS::Lambda::EventSourceMapping",
-        {
-            "BatchSize": 100,
-            "ParallelizationFactor": 1,
-            "BisectBatchOnFunctionError": True,
-            "MaximumRetryAttempts": 2,
-            "DestinationConfig": Match.object_like({"OnFailure": Match.any_value()}),
-        },
+        {"BatchSize": 10, "ScalingConfig": {"MaximumConcurrency": 5}},
     )
 
 

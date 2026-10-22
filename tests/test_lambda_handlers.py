@@ -1,4 +1,3 @@
-import base64
 import importlib
 import json
 
@@ -16,7 +15,6 @@ def aws(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
-    monkeypatch.setenv("STREAM_NAME", "payments")
     monkeypatch.setenv("PROFILES_TABLE", "profiles")
     monkeypatch.setenv("ALERTS_TABLE", "alerts")
     monkeypatch.setenv("MAX_EMAILS_PER_HOUR", "2")
@@ -32,7 +30,10 @@ def aws(monkeypatch):
             KeySchema=[{"AttributeName": "alert_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "alert_id", "AttributeType": "S"}],
         )
-        boto3.client("kinesis", region_name=REGION).create_stream(StreamName="payments", ShardCount=1)
+        queue = boto3.client("sqs", region_name=REGION).create_queue(
+            QueueName="payments.fifo", Attributes={"FifoQueue": "true"}
+        )["QueueUrl"]
+        monkeypatch.setenv("QUEUE_URL", queue)
         topic = boto3.client("sns", region_name=REGION).create_topic(Name="alerts")["TopicArn"]
         monkeypatch.setenv("ALERT_TOPIC_ARN", topic)
         yield
@@ -55,12 +56,29 @@ def test_ingest_writes_valid_events_and_rejects_bad_ones(aws):
     assert resp["statusCode"] == 202
     assert body["accepted"] == 5 and len(body["rejected"]) == 2
 
-    kinesis = boto3.client("kinesis", region_name=REGION)
-    shard = kinesis.describe_stream(StreamName="payments")["StreamDescription"]["Shards"][0]["ShardId"]
-    it = kinesis.get_shard_iterator(StreamName="payments", ShardId=shard, ShardIteratorType="TRIM_HORIZON")["ShardIterator"]
-    records = kinesis.get_records(ShardIterator=it)["Records"]
-    assert len(records) == 5
-    assert {r["PartitionKey"] for r in records} == {e["payer_id"] for e in good}
+    sqs = boto3.client("sqs", region_name=REGION)
+    queue = sqs.get_queue_url(QueueName="payments.fifo")["QueueUrl"]
+    messages = []
+    while True:
+        batch = sqs.receive_message(QueueUrl=queue, MaxNumberOfMessages=10, AttributeNames=["MessageGroupId"]).get("Messages", [])
+        if not batch:
+            break
+        messages += batch
+        sqs.delete_message_batch(QueueUrl=queue, Entries=[{"Id": str(i), "ReceiptHandle": m["ReceiptHandle"]} for i, m in enumerate(batch)])
+    assert len(messages) == 5
+    assert {m["Attributes"]["MessageGroupId"] for m in messages} == {e["payer_id"] for e in good}
+    assert {json.loads(m["Body"])["txn_id"] for m in messages} == {e["txn_id"] for e in good}
+
+
+def test_ingest_dedups_retried_payments(aws):
+    ingest = importlib.reload(importlib.import_module("ingest.handler"))
+    events = _events(3)
+    ingest.handler(_api_event({"events": events}), None)
+    ingest.handler(_api_event({"events": events}), None)
+    sqs = boto3.client("sqs", region_name=REGION)
+    queue = sqs.get_queue_url(QueueName="payments.fifo")["QueueUrl"]
+    attrs = sqs.get_queue_attributes(QueueUrl=queue, AttributeNames=["ApproximateNumberOfMessages"])["Attributes"]
+    assert attrs["ApproximateNumberOfMessages"] == "3"
 
 
 def test_ingest_accepts_single_event_and_rejects_garbage(aws):
@@ -70,16 +88,16 @@ def test_ingest_accepts_single_event_and_rejects_garbage(aws):
     assert ingest.handler(_api_event({"events": []}), None)["statusCode"] == 400
 
 
-def _kinesis_event(txns):
-    return {"Records": [{"kinesis": {"data": base64.b64encode(json.dumps(t).encode()).decode()}} for t in txns]}
+def _sqs_event(txns):
+    return {"Records": [{"messageId": t["txn_id"], "body": json.dumps(t)} for t in txns]}
 
 
 def test_scorer_writes_profiles_alerts_and_throttles_email(aws, capsys):
     scorer = importlib.reload(importlib.import_module("scorer.handler"))
     events = _events()
     totals = {"scored": 0, "alerts": 0, "emails": 0}
-    for i in range(0, len(events), 100):
-        out = scorer.handler(_kinesis_event(events[i : i + 100]), None)
+    for i in range(0, len(events), 10):
+        out = scorer.handler(_sqs_event(events[i : i + 10]), None)
         for k in totals:
             totals[k] += out[k]
 

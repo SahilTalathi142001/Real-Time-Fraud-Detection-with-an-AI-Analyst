@@ -1,7 +1,11 @@
 """Phase 2: real-time streaming path.
 
-generator --(SigV4-signed HTTPS)--> API Gateway HTTP API --> ingest Lambda --> Kinesis
-Kinesis --> scorer Lambda --> DynamoDB (profiles, alerts) + SNS email for severe alerts
+generator --(SigV4-signed HTTPS)--> API Gateway HTTP API --> ingest Lambda --> SQS FIFO
+SQS FIFO --> scorer Lambda --> DynamoDB (profiles, alerts) + SNS email for severe alerts
+
+SQS FIFO stands in for Kinesis Data Streams, which this AWS account (Free plan) cannot use.
+MessageGroupId = payer_id gives the same per-payer ordering a Kinesis partition key would.
+See docs/production-version.md.
 """
 
 from aws_cdk import (
@@ -13,7 +17,6 @@ from aws_cdk import (
     aws_apigatewayv2_authorizers as authorizers,
     aws_apigatewayv2_integrations as integrations,
     aws_dynamodb as dynamodb,
-    aws_kinesis as kinesis,
     aws_lambda as lambda_,
     aws_lambda_event_sources as sources,
     aws_logs as logs,
@@ -33,16 +36,25 @@ class StreamingStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
         name = config.project_name
 
-        # One provisioned shard: ~$0.015/hour and 1 MB/s or 1,000 records/s of writes, far above what we need.
-        self.stream = kinesis.Stream(
+        self.payments_dlq = sqs.Queue(
             self,
-            "PaymentsStream",
-            stream_name=f"{name}-payments",
-            stream_mode=kinesis.StreamMode.PROVISIONED,
-            shard_count=1,
-            retention_period=Duration.hours(24),
-            encryption=kinesis.StreamEncryption.MANAGED,
-            removal_policy=RemovalPolicy.DESTROY,
+            "PaymentsDlq",
+            queue_name=f"{name}-payments-dlq.fifo",
+            fifo=True,
+            retention_period=Duration.days(14),
+        )
+        self.payments_queue = sqs.Queue(
+            self,
+            "PaymentsQueue",
+            queue_name=f"{name}-payments.fifo",
+            fifo=True,
+            # High-throughput FIFO: ordering and dedup are per payer, not per queue.
+            deduplication_scope=sqs.DeduplicationScope.MESSAGE_GROUP,
+            fifo_throughput_limit=sqs.FifoThroughputLimit.PER_MESSAGE_GROUP_ID,
+            retention_period=Duration.days(1),
+            visibility_timeout=Duration.seconds(360),  # 6x the scorer timeout, as AWS recommends
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            dead_letter_queue=sqs.DeadLetterQueue(queue=self.payments_dlq, max_receive_count=3),
         )
 
         self.profiles_table = dynamodb.TableV2(
@@ -94,9 +106,9 @@ class StreamingStack(Stack):
             code=code,
             memory_size=256,
             timeout=Duration.seconds(10),
-            environment={"STREAM_NAME": self.stream.stream_name},
+            environment={"QUEUE_URL": self.payments_queue.queue_url},
         )
-        self.stream.grant_write(self.ingest_fn)
+        self.payments_queue.grant_send_messages(self.ingest_fn)
 
         self.scorer_fn = lambda_.Function(
             self,
@@ -122,17 +134,11 @@ class StreamingStack(Stack):
         self.alerts_table.grant_read_write_data(self.scorer_fn)
         self.alert_topic.grant_publish(self.scorer_fn)
 
-        self.scorer_dlq = sqs.Queue(self, "ScorerDlq", queue_name=f"{name}-scorer-dlq", retention_period=Duration.days(4))
         self.scorer_fn.add_event_source(
-            sources.KinesisEventSource(
-                self.stream,
-                starting_position=lambda_.StartingPosition.LATEST,
-                batch_size=100,
-                max_batching_window=Duration.seconds(1),
-                parallelization_factor=1,  # keep each payer's events strictly ordered
-                retry_attempts=2,
-                bisect_batch_on_error=True,
-                on_failure=sources.SqsDlq(self.scorer_dlq),
+            sources.SqsEventSource(
+                self.payments_queue,
+                batch_size=10,  # FIFO maximum
+                max_concurrency=5,  # caps parallel scorers (and DynamoDB/SageMaker load)
             )
         )
 
@@ -159,7 +165,8 @@ class StreamingStack(Stack):
         )
 
         CfnOutput(self, "PaymentsApiUrl", value=f"{self.api.api_endpoint}/payments")
-        CfnOutput(self, "StreamName", value=self.stream.stream_name)
+        CfnOutput(self, "PaymentsQueueUrl", value=self.payments_queue.queue_url)
+        CfnOutput(self, "PaymentsDlqUrl", value=self.payments_dlq.queue_url)
         CfnOutput(self, "AlertsTableName", value=self.alerts_table.table_name)
         CfnOutput(self, "ProfilesTableName", value=self.profiles_table.table_name)
         CfnOutput(self, "AlertTopicArn", value=self.alert_topic.topic_arn)

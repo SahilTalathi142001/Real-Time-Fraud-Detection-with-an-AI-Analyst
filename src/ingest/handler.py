@@ -1,8 +1,10 @@
-"""API Gateway (HTTP API) -> ingest Lambda -> Kinesis.
+"""API Gateway (HTTP API) -> ingest Lambda -> SQS FIFO queue.
 
 POST /payments with either one payment object or {"events": [ ... up to 500 ... ]}.
-Valid payments are written to Kinesis, partitioned by payer_id so that one payer's
-payments stay in order on the same shard (the scorer relies on that for velocity features).
+Valid payments are sent to a FIFO queue with MessageGroupId = payer_id, so one payer's
+payments are delivered to the scorer strictly in order (it relies on that for velocity
+features), while different payers are processed in parallel. MessageDeduplicationId =
+txn_id, so a retried request inside the 5-minute dedup window is not scored twice.
 """
 
 from __future__ import annotations
@@ -13,8 +15,9 @@ import time
 
 import boto3
 
-STREAM_NAME = os.environ.get("STREAM_NAME", "")
+QUEUE_URL = os.environ.get("QUEUE_URL", "")
 MAX_EVENTS = 500
+SQS_BATCH = 10
 
 REQUIRED: dict[str, type | tuple[type, ...]] = {
     "txn_id": str,
@@ -32,7 +35,7 @@ REQUIRED: dict[str, type | tuple[type, ...]] = {
     "lon": (int, float),
 }
 
-kinesis = boto3.client("kinesis")
+sqs = boto3.client("sqs")
 
 
 def validate(event: object) -> str | None:
@@ -52,19 +55,28 @@ def _response(status: int, body: dict) -> dict:
     return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(body)}
 
 
-def _put_records(events: list[dict]) -> int:
-    records = [
-        {"Data": json.dumps(e, separators=(",", ":")).encode(), "PartitionKey": e["payer_id"]} for e in events
-    ]
-    failed = 0
-    for attempt in range(3):
-        resp = kinesis.put_records(StreamName=STREAM_NAME, Records=records)
-        failed = resp["FailedRecordCount"]
-        if not failed:
-            return 0
-        records = [rec for rec, res in zip(records, resp["Records"]) if "ErrorCode" in res]
-        time.sleep(0.1 * 2**attempt)
-    return failed
+def _send(events: list[dict]) -> int:
+    """Send in batches of 10 (the SQS maximum), retrying failed entries; returns the number still failing."""
+    failed_total = 0
+    for i in range(0, len(events), SQS_BATCH):
+        entries = [
+            {
+                "Id": str(j),
+                "MessageBody": json.dumps(e, separators=(",", ":")),
+                "MessageGroupId": e["payer_id"],
+                "MessageDeduplicationId": e["txn_id"],
+            }
+            for j, e in enumerate(events[i : i + SQS_BATCH])
+        ]
+        for attempt in range(3):
+            resp = sqs.send_message_batch(QueueUrl=QUEUE_URL, Entries=entries)
+            failed_ids = {f["Id"] for f in resp.get("Failed", [])}
+            entries = [e for e in entries if e["Id"] in failed_ids]
+            if not entries:
+                break
+            time.sleep(0.1 * 2**attempt)
+        failed_total += len(entries)
+    return failed_total
 
 
 def handler(event, context):
@@ -88,7 +100,7 @@ def handler(event, context):
             e.setdefault("ingested_at_ms", int(time.time() * 1000))
             valid.append(e)
 
-    failed = _put_records(valid) if valid else 0
+    failed = _send(valid) if valid else 0
     if failed:
         return _response(503, {"error": f"{failed} records could not be written, retry", "rejected": rejected})
     return _response(202 if valid else 400, {"accepted": len(valid), "rejected": rejected})
