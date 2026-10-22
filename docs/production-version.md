@@ -76,3 +76,12 @@ layer de-duplicates by `txn_id`.
   customer-managed KMS keys, WAF on the API, and Cognito/OIDC for the analyst UI.
 - **Alerting:** an alert-case workflow (Step Functions or a ticketing integration) instead of
   email.
+- **AI analyst:**
+  - Put the agent behind AgentCore inbound JWT auth (Cognito or your IdP) so each analyst signs in
+    and their identity is passed to the tools; today the runtime trusts any caller with IAM access.
+  - Use AgentCore Memory instead of in-process conversation state, so context survives restarts and
+    long gaps.
+  - Add Bedrock Guardrails for PII redaction (VPAs, IPs) in answers.
+  - Turn on CloudWatch Transaction Search to get the AgentCore traces.
+  - Give the SQL tool a read-only Lake Formation principal limited to silver/gold.
+  - Run the `python -m agent eval` cases in CI on every prompt or model change.

@@ -3,8 +3,9 @@
   "watch": {
     "include": [
       "infra/**",
-      "src/**"
-    ],
+        "src/**",
+        "kb/**"
+      ],
     "exclude": [
       "**/__pycache__",
       "tests/**",
@@ -20,6 +21,7 @@
       80,
       110
     ],
+    "analystModelId": "in.anthropic.claude-haiku-4-5-20251001-v1:0",
     "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/aws-iam:minimizePolicies": true,

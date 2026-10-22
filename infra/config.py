@@ -15,6 +15,7 @@ class ProjectConfig:
     alert_email: str
     budget_limit_usd: float
     budget_alert_thresholds_usd: tuple[float, ...]
+    analyst_model_id: str = "in.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     @property
     def glue_database(self) -> str:
@@ -30,4 +31,5 @@ class ProjectConfig:
             alert_email=node.try_get_context("alertEmail") or "",
             budget_limit_usd=float(node.try_get_context("budgetLimitUsd") or 134),
             budget_alert_thresholds_usd=tuple(float(t) for t in thresholds),
+            analyst_model_id=node.try_get_context("analystModelId") or ProjectConfig.analyst_model_id,
         )
