@@ -194,13 +194,14 @@ class AnalystStack(Stack):
         alerts_table.grant_read_data(runtime_role)
 
         self.runtime_arn = None
+        self.runtime_name = name.replace("-", "_") if runtime_zip else None
         if runtime_zip:
             code = assets.Asset(self, "RuntimeCode", path=runtime_zip)
             code.grant_read(runtime_role)
             runtime = agentcore.CfnRuntime(
                 self,
                 "Runtime",
-                agent_runtime_name=name.replace("-", "_"),
+                agent_runtime_name=self.runtime_name,
                 description="Strands fraud analyst agent (Claude on Bedrock)",
                 role_arn=runtime_role.role_arn,
                 agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(

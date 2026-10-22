@@ -12,6 +12,7 @@ from infra.stacks.analyst_stack import AnalystStack
 from infra.stacks.foundation_stack import FoundationStack
 from infra.stacks.lakehouse_stack import LakehouseStack
 from infra.stacks.ml_stack import MlStack
+from infra.stacks.monitoring_stack import MonitoringStack
 from infra.stacks.streaming_stack import StreamingStack
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +76,7 @@ def build_app(context: dict | None = None) -> cdk.App:
         lake_queue=lakehouse.lake_buffer,
         env=env,
     )
-    AnalystStack(
+    analyst = AnalystStack(
         app,
         "FraudAnalyst",
         config=config,
@@ -89,6 +90,39 @@ def build_app(context: dict | None = None) -> cdk.App:
         runtime_zip=runtime_zip_path(app),
         env=env,
     )
+    MonitoringStack(
+        app,
+        "FraudMonitoring",
+        config=config,
+        api=streaming.api,
+        payments_queue=streaming.payments_queue,
+        payments_dlq=streaming.payments_dlq,
+        lake_buffer=lakehouse.lake_buffer,
+        lake_buffer_dlq=lakehouse.lake_buffer_dlq,
+        ingest_fn=streaming.ingest_fn,
+        scorer_fn=streaming.scorer_fn,
+        loader_fn=lakehouse.loader_fn,
+        endpoint_name=ml.endpoint_name if ml.has_endpoint else None,
+        glue_job_name=lakehouse.glue_job_name,
+        athena_workgroup=lakehouse.workgroup_name,
+        runtime_name=analyst.runtime_name,
+        model_id=config.analyst_model_id,
+        env=env,
+    )
+
+    # ml/latest_model.json and build/analyst_runtime.zip are git-ignored, so a fresh clone has neither.
+    # Deploying then would delete a live endpoint or runtime, so say so loudly.
+    if not ml.has_endpoint:
+        cdk.Annotations.of(ml).add_warning_v2(
+            "fraud:no-model",
+            "No trained model: FraudMl gets no endpoint and the scorer uses rules only. If a model was "
+            "trained before, run `python -m ml.pipeline use-latest` first (or `train` on a new account).",
+        )
+    if not analyst.runtime_name:
+        cdk.Annotations.of(analyst).add_warning_v2(
+            "fraud:no-runtime-zip",
+            "No build/analyst_runtime.zip: FraudAnalyst gets no AgentCore runtime. Run `python -m agent package` first.",
+        )
 
     cdk.Tags.of(app).add("project", config.project_name)
     return app

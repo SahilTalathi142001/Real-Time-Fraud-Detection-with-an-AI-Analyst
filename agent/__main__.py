@@ -79,11 +79,13 @@ def main() -> None:
         if args.cmd == "ask":
             print_answer(analyst.ask(args.question, session), not args.quiet)
             return
-        print("Ask about fraud alerts, payers, trends. Ctrl-D to quit.")
+        print("Ask about fraud alerts, payers, trends. Type exit to quit.")
         while True:
             try:
                 question = input("\nyou> ").strip()
-            except EOFError:
+            except (EOFError, KeyboardInterrupt):
+                break
+            if question.lower() in ("exit", "quit"):
                 break
             if question:
                 print_answer(analyst.ask(question, session), not args.quiet)

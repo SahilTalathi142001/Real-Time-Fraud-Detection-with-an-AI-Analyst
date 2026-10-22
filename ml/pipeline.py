@@ -4,6 +4,7 @@
     python -m ml.pipeline train               # SageMaker job; writes ml/latest_model.json
     cdk deploy FraudMl FraudStreaming         # creates the serverless endpoint, wires the scorer
     python -m ml.pipeline invoke              # send a few rows to the endpoint
+    python -m ml.pipeline use-latest          # fresh clone: rebuild ml/latest_model.json from S3
 
 `train --backend auto` uses a SageMaker Training Job when the account has
 training-instance quota, otherwise a SageMaker Processing Job running the same
@@ -187,6 +188,10 @@ def cmd_train(args, session: boto3.Session) -> None:
         model_url = f"s3://{bucket}/ml/output/{name}/model.tar.gz"
         billable = int((d["ProcessingEndTime"] - d["ProcessingStartTime"]).total_seconds())
 
+    _write_latest(session, bucket, name, backend, model_url, billable)
+
+
+def _write_latest(session: boto3.Session, bucket: str, name: str, backend: str, model_url: str, billable: int | None) -> None:
     metrics = _read_metrics(session.client("s3"), bucket, model_url.split(f"s3://{bucket}/", 1)[1])
     metrics["feature_importance_gain"] = {
         FEATURE_NAMES[int(k[1:])] if k.startswith("f") and k[1:].isdigit() else k: v
@@ -197,7 +202,7 @@ def cmd_train(args, session: boto3.Session) -> None:
         "job_name": name,
         "backend": backend,
         "model_data_url": model_url,
-        "image": xgboost_image(region),
+        "image": xgboost_image(session.region_name),
         "threshold": metrics["best_f1"]["threshold"],
         "billable_seconds": billable,
         "metrics": metrics,
@@ -207,6 +212,26 @@ def cmd_train(args, session: boto3.Session) -> None:
     best = metrics["best_f1"]
     print(f"Model AUC {metrics['validation_auc']:.4f}; at threshold {best['threshold']}: precision {best['precision']:.3f} recall {best['recall']:.3f} f1 {best['f1']:.3f}")
     print(f"Wrote {LATEST.relative_to(ROOT)}. Next: cdk deploy FraudMl FraudStreaming")
+
+
+def newest_model_key(keys: list[str]) -> str | None:
+    """The newest `ml/output/fraud-xgb-<UTC timestamp>/.../model.tar.gz` (job names sort by time)."""
+    models = [k for k in keys if k.startswith("ml/output/fraud-xgb-") and k.endswith("/model.tar.gz")]
+    return max(models, key=lambda k: k.split("/")[2], default=None)
+
+
+def cmd_use_latest(args, session: boto3.Session) -> None:
+    """Rebuild ml/latest_model.json from the newest model already in S3 (e.g. on a fresh clone)."""
+    bucket = stack_outputs(session, "FraudFoundation")["ArtifactsBucketName"]
+    keys = [o["Key"] for page in session.client("s3").get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="ml/output/")
+            for o in page.get("Contents", [])]
+    key = newest_model_key(keys)
+    if not key:
+        raise SystemExit(f"No trained model in s3://{bucket}/ml/output/. Run: python -m ml.pipeline build-data && python -m ml.pipeline train")
+    name = key.split("/")[2]
+    backend = "processing" if key == f"ml/output/{name}/model.tar.gz" else "training"
+    print(f"Using {name} (s3://{bucket}/{key})")
+    _write_latest(session, bucket, name, backend, f"s3://{bucket}/{key}", None)
 
 
 def cmd_invoke(args, session: boto3.Session) -> None:
@@ -238,10 +263,12 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("invoke")
     p.add_argument("--endpoint", default="fraud-analyst-xgb")
     p.add_argument("--seed", type=int, default=7)
+    sub.add_parser("use-latest")
     args = parser.parse_args(argv)
 
     session = boto3.Session()
-    {"build-data": cmd_build_data, "train": cmd_train, "invoke": cmd_invoke}[args.cmd](args, session)
+    commands = {"build-data": cmd_build_data, "train": cmd_train, "invoke": cmd_invoke, "use-latest": cmd_use_latest}
+    commands[args.cmd](args, session)
 
 
 if __name__ == "__main__":
