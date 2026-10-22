@@ -1,0 +1,4 @@
+# Installed into the AgentCore code zip as linux/arm64 wheels by `python -m agent package`.
+strands-agents==1.62.0
+bedrock-agentcore==1.24.2
+boto3>=1.40

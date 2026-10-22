@@ -1,4 +1,6 @@
 import json
+import tempfile
+import zipfile
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -11,12 +13,19 @@ TEST_MODEL_URL = "s3://test-artifacts/ml/output/fraud-xgb-test/model.tar.gz"
 TEST_MODEL_IMAGE = "720646828776.dkr.ecr.ap-south-1.amazonaws.com/sagemaker-xgboost:1.7-1"  # pragma: allowlist secret
 
 
+def _placeholder_runtime_zip() -> str:
+    path = Path(tempfile.mkdtemp()) / "analyst_runtime.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("main.py", "print('placeholder')\n")
+    return str(path)
+
+
 def _make_app(extra_context: dict) -> cdk.App:
     mp = pytest.MonkeyPatch()
     for k, v in TEST_ENV.items():
         mp.setenv(k, v)
     context = json.loads((Path(__file__).parents[1] / "cdk.json").read_text())["context"]
-    app = build_app({**context, **extra_context})
+    app = build_app({**context, "analystRuntimeZip": _placeholder_runtime_zip(), **extra_context})
     mp.undo()
     return app
 

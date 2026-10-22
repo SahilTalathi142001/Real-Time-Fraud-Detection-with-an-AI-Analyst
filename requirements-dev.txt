@@ -3,5 +3,9 @@ pytest>=8.0
 moto[dynamodb,sns,sqs]>=5.0
 xgboost-cpu>=2.0
 numpy>=1.26
+# AI analyst (phase 5): the agent code, the Streamlit UI, and their tests
+strands-agents==1.62.0
+bedrock-agentcore==1.24.2
+streamlit==1.66.1
 # Optional: lets tests/test_glue_job.py run the Glue transformations on local Spark (needs Java 17+)
 pyspark==3.5.4

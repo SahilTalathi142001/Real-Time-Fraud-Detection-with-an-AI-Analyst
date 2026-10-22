@@ -31,7 +31,7 @@ from constructs import Construct
 from common.lake_schema import LAKE_TABLES
 from infra.config import ProjectConfig
 
-LAMBDA_CODE_EXCLUDES = ["glue_jobs", "**/__pycache__", "**/*.pyc"]
+LAMBDA_CODE_EXCLUDES = ["glue_jobs", "analyst", "**/__pycache__", "**/*.pyc"]
 
 
 class LakehouseStack(Stack):

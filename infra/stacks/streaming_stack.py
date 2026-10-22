@@ -29,7 +29,7 @@ from constructs import Construct
 
 from infra.config import ProjectConfig
 
-LAMBDA_CODE_EXCLUDES = ["glue_jobs", "**/__pycache__", "**/*.pyc"]
+LAMBDA_CODE_EXCLUDES = ["glue_jobs", "analyst", "**/__pycache__", "**/*.pyc"]
 
 
 class StreamingStack(Stack):
